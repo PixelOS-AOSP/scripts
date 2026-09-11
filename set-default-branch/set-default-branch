@@ -61,7 +61,8 @@ list_glab_repos() {
         if [[ "${count}" -eq 0 ]]; then
             break
         fi
-        echo "${json}" | jq --raw-output '.[].path_with_namespace'
+        # Skip archived projects (read-only, default branch can't be changed)
+        echo "${json}" | jq --raw-output '.[] | select(.archived != true) | .path_with_namespace'
         if [[ "${count}" -lt 100 ]]; then
             break
         fi
@@ -69,16 +70,39 @@ list_glab_repos() {
     done
 }
 
+glab_branch_exists() {
+    local project="$1"
+    local branch="$2"
+    local encoded="${project//\//%2F}"
+    glab api "projects/${encoded}/repository/branches/${branch}" >/dev/null 2>&1
+}
+
 if [[ "${PROVIDER}" == "glab" ]]; then
     for repo in $(list_glab_repos); do
+        updated=false
         for branch in "${BRANCHES[@]}"; do
-            glab repo update "${repo}" --defaultBranch "${branch}"
+            if glab_branch_exists "${repo}" "${branch}"; then
+                glab repo update "${repo}" --defaultBranch "${branch}"
+                updated=true
+                break
+            fi
         done
+        if [[ "${updated}" != "true" ]]; then
+            echo "Skipping ${repo}: none of [${BRANCHES[*]}] exists" >&2
+        fi
     done
 else
-    for repo in $(gh repo list "${ORG}" -L 99999 --json name | jq ".[].name" --raw-output); do
+    for repo in $(gh repo list "${ORG}" -L 99999 --json name,isArchived --jq '.[] | select(.isArchived != true) | .name'); do
+        updated=false
         for branch in "${BRANCHES[@]}"; do
-            gh repo edit "${ORG}/${repo}" --default-branch "${branch}"
+            if gh api "repos/${ORG}/${repo}/branches/${branch}" --silent >/dev/null 2>&1; then
+                gh repo edit "${ORG}/${repo}" --default-branch "${branch}"
+                updated=true
+                break
+            fi
         done
+        if [[ "${updated}" != "true" ]]; then
+            echo "Skipping ${ORG}/${repo}: none of [${BRANCHES[*]}] exists" >&2
+        fi
     done
 fi
