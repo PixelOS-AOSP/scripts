@@ -5,11 +5,80 @@
 
 set -u
 
-ORG="$1"
-BRANCHES="${@:2}"
+PROVIDER="gh"
 
-for repo in $(gh repo list "${ORG}" -L 99999 --json name | jq ".[].name" --raw-output); do
-    for branch in $BRANCHES; do
-        gh repo edit "${ORG}/${repo}" --default-branch "${branch}"
-    done
+usage() {
+    echo "Usage: $(basename "$0") [--provider gh|glab] ORG BRANCH [BRANCH...]" >&2
+}
+
+while [[ "${1:-}" == -* ]]; do
+    case "$1" in
+        --provider=*)
+            PROVIDER="${1#*=}"
+            shift
+            ;;
+        --provider | -p)
+            PROVIDER="${2:?Missing value for $1}"
+            shift 2
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage
+            exit 1
+            ;;
+    esac
 done
+
+if [[ "$#" -lt 2 ]]; then
+    usage
+    exit 1
+fi
+
+if [[ "${PROVIDER}" != "gh" && "${PROVIDER}" != "glab" ]]; then
+    echo "Invalid provider: ${PROVIDER} (expected gh or glab)" >&2
+    usage
+    exit 1
+fi
+
+ORG="$1"
+BRANCHES=("${@:2}")
+
+list_glab_repos() {
+    local page=1
+    while true; do
+        local json
+        json=$(glab repo list --group "${ORG}" --include-subgroups --per-page 100 --page "${page}" --output json)
+        local count
+        count=$(echo "${json}" | jq 'length')
+        if [[ "${count}" -eq 0 ]]; then
+            break
+        fi
+        echo "${json}" | jq --raw-output '.[].path_with_namespace'
+        if [[ "${count}" -lt 100 ]]; then
+            break
+        fi
+        page=$((page + 1))
+    done
+}
+
+if [[ "${PROVIDER}" == "glab" ]]; then
+    for repo in $(list_glab_repos); do
+        for branch in "${BRANCHES[@]}"; do
+            glab repo update "${repo}" --defaultBranch "${branch}"
+        done
+    done
+else
+    for repo in $(gh repo list "${ORG}" -L 99999 --json name | jq ".[].name" --raw-output); do
+        for branch in "${BRANCHES[@]}"; do
+            gh repo edit "${ORG}/${repo}" --default-branch "${branch}"
+        done
+    done
+fi
